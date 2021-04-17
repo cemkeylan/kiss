@@ -2,7 +2,7 @@
 # shellcheck source=/dev/null
 #
 # This is a simple package manager written in POSIX shell for use
-# in KISS Linux (https://k1ss.org).
+# in KISS Linux (https://k1sslinux.org).
 #
 # Created by Dylan Araps.
 
@@ -37,17 +37,8 @@ as_root() {
     [ "$uid" = 0 ] || log "Using '${su:=su}' (to become ${user:=root})"
 
     case ${su##*/} in
-        doas|sudo|ssu)
-            "$su" -u "$user" -- env "$@"
-        ;;
-
-        su)
-            "$su" -c "env $* <&3" "$user" 3<&0 </dev/tty
-        ;;
-
-        *)
-            die "Invalid KISS_SU value: ${su##*/} (valid: doas, sudo, ssu, su)"
-        ;;
+        su) "$su" -c "env $* <&3" "$user" 3<&0 </dev/tty ;;
+        *) "$su" -u "$user" -- env "$@" ;;
     esac
 }
 
@@ -100,7 +91,7 @@ decompress() {
         *.lz)       lzip -dc  ;;
         *.tar)      cat       ;;
         *.tgz|*.gz) gzip -d   ;;
-        *.xz|*.txz) xz -dcT 0 ;;
+        *.xz|*.txz) xz -dcT0  ;;
         *.zst)      zstd -dc  ;;
     esac < "$1"
 }
@@ -474,8 +465,8 @@ pkg_fix_deps() {
             case $line in
                 *NEEDED*\[*\] | *'=>'*)
                     # readelf: 0x0000 (NEEDED) Shared library: [libjson-c.so.5]
-                    line=${line##*[}
-                    line=${line%%]*}
+                    line=${line##*\[}
+                    line=${line%%\]*}
 
                     # ldd:     libjson-c.so.5 => /lib/libjson-c.so.5 ...
                     line=${line##*=> }
@@ -580,7 +571,7 @@ pkg_tar() (
         gz)   gzip -6  ;;
         lzma) lzma -z  ;;
         lz)   lzip -z  ;;
-        xz)   xz -zT 0 ;;
+        xz)   xz -zT0  ;;
         zst)  zstd -z  ;;
     esac > "$bin_dir/$1@$version-$release.tar.${KISS_COMPRESS:=gz}"
 
@@ -592,6 +583,8 @@ pkg_build() {
     # Build packages and turn them into packaged tarballs.
 
     log "Resolving dependencies"
+
+    nexplicit="$#"
 
     # Mark packages passed on the command-line separately from those
     # detected as dependencies. We need to treat explicitly passed packages
@@ -624,8 +617,8 @@ pkg_build() {
 
     log "Building: $*"
 
-    # Only ask for confirmation if more than one package needs to be built.
-    [ "$#" -gt 1 ] || [ "$pkg_update" ] && { prompt || exit 0 ;}
+    # Only ask for confirmation if dependencies need to be built.
+    [ "$#" -ne "$nexplicit" ] || [ "$pkg_update" ] && prompt
 
     for pkg do pkg_lint "$pkg"; done
 
@@ -646,10 +639,14 @@ pkg_build() {
     for pkg do pkg_sources "$pkg"; done
     pkg_verify "$@"
 
+    # Record the total number of packages under a variable so that they are
+    # accessible to hooks.
+    pkg_total=$#
+
     # Finally build and create tarballs for all passed packages and
     # dependencies.
     for pkg do
-        log "$pkg" "Building package ($((in+=1))/$#)"
+        log "$pkg" "Building package ($((pkg_cur+=1))/$pkg_total)"
 
         run_hook pre-extract "$pkg" "$pkg_dir/$pkg"
         pkg_extract "$pkg"
@@ -1145,7 +1142,8 @@ pkg_remove() {
 
     # Reset 'trap' to its original value. Removal is done so
     # we no longer need to block 'Ctrl+C'.
-    trap pkg_clean EXIT INT
+    trap pkg_clean EXIT
+    trap 'pkg_clean; exit 1' INT
 
     log "$1" "Removed successfully"
 }
@@ -1269,7 +1267,8 @@ pkg_install() {
 
     # Reset 'trap' to its original value. Installation is done so we no longer
     # need to block 'Ctrl+C'.
-    trap pkg_clean EXIT INT
+    trap pkg_clean EXIT
+    trap 'pkg_clean; exit 1' INT
 
     if [ -x "$sys_db/$pkg_name/post-install" ]; then
         log "$pkg_name" "Running post-install hook"
@@ -1305,7 +1304,7 @@ pkg_updates() {
     for repo do
         # Go to the root of the repository (if it exists).
         if ! cd "$repo" 2>/dev/null; then
-            log "Skipping "$repo", not a directory"; continue
+            log "Skipping $repo, not a directory"; continue
         fi
 
         case $(git remote 2>/dev/null) in
@@ -1397,7 +1396,7 @@ pkg_updates() {
         log "Detected package manager update"
         log "The package manager will be updated first"
 
-        prompt || exit 0
+        prompt
 
         pkg_build kiss
         args i kiss
@@ -1547,7 +1546,7 @@ args() {
         l|list)     pkg_list "$@" ;;
         u|update)   pkg_updates ;;
         s|search)   for pkg do pkg_find "$pkg" all; done ;;
-        v|version)  printf '5.2.4\n' ;;
+        v|version)  printf '5.2.8\n' ;;
 
         '')
             log 'kiss [a|b|c|d|i|l|r|s|u|v] [pkg]...'
@@ -1628,7 +1627,8 @@ main() {
 
     # Catch errors and ensure that build files and directories are cleaned
     # up before we die. This occurs on 'Ctrl+C' as well as success and error.
-    trap pkg_clean EXIT INT
+    trap pkg_clean EXIT
+    trap 'pkg_clean; exit 1' INT
 
     # Figure out which 'sudo' command to use based on the user's choice or what
     # is available on the system.
